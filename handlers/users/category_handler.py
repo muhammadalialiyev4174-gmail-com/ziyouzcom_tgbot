@@ -92,7 +92,31 @@ async def kutubxona_handler(message: types.Message):
     await message.answer("Bosh sahifa", reply_markup=menu)
 
 
-@dp.message(lambda msg: msg.text and msg.text != "⬅️ Ortga" and msg.text != "📚 Ziyouz kutubxonasi" and msg.text != "🗒 Qo`llanma" and msg.text != "KUTUBXONA RIVOJIGA HISSA" and not msg.text.startswith("/"))
+@dp.message(F.text == "◀️ Ortga")
+async def back_handler(message: types.Message):
+    menu = await get_category_menu(db)
+    await message.answer(text="📜 Bosh sahifa", reply_markup=menu)
+
+
+@dp.message(F.text.startswith("🔙 Orqaga: "))
+async def nested_back_handler(message: types.Message):
+    category_name = message.text.replace("🔙 Orqaga: ", "")
+    category_books = await db.select_any_category_books(typ=category_name)
+    
+    if not category_books:
+        menu = await get_category_menu(db)
+        await message.answer(text="📜 Bosh sahifa", reply_markup=menu)
+        return
+        
+    builder = ReplyKeyboardBuilder()
+    for subcategory in category_books:
+        builder.button(text=subcategory[1])
+    builder.adjust(2)
+    builder.row(KeyboardButton(text="◀️ Ortga"))
+    await message.reply(f"Bo`limlar: {category_name}", reply_markup=builder.as_markup(resize_keyboard=True))
+
+
+@dp.message(lambda msg: msg.text and msg.text not in ["⬅️ Ortga", "◀️ Ortga", "📚 Ziyouz kutubxonasi", "🗒 Qo`llanma", "KUTUBXONA RIVOJIGA HISSA"] and not msg.text.startswith("/") and not msg.text.startswith("🔙 Orqaga: "))
 async def dynamic_category_handler(message: types.Message):
     # Determine if text is a category or a subcategory
     # First, let's check if it's a category
@@ -124,16 +148,10 @@ async def dynamic_category_handler(message: types.Message):
     reply_text, inline_markup = generate_books_keyboard(parsed_data, category_book[0], page=1)
     
     empty_keyboard = ReplyKeyboardBuilder()
-    empty_keyboard.button(text="◀️ Ortga")
+    empty_keyboard.button(text=f"🔙 Orqaga: {category_book[2]}")
     
     await message.reply(text=reply_text, reply_markup=inline_markup)
     await bot.send_message(chat_id=message.chat.id, text="Kitoblar ⬆️", reply_markup=empty_keyboard.as_markup(resize_keyboard=True))
-
-
-@dp.message(F.text == "◀️ Ortga")
-async def back_handler(message: types.Message):
-    menu = await get_category_menu(db)
-    await message.answer(text="📜 Bosh sahifa", reply_markup=menu)
 
 
 @dp.callback_query(F.data.startswith("page_"))
@@ -190,35 +208,53 @@ async def book_download_handler(callback: types.CallbackQuery):
     
     caption_text = f"<b>{book_name}</b>\n\n<b>Manba</b>: ziyouz.com"
     
-    # Download the file to /tmp/ async
-    tmp_path = f"/tmp/{book_number}_{os.path.basename(book_url.split('?')[0])}"
-    if not tmp_path.endswith('.pdf') and not tmp_path.endswith('.zip') and not tmp_path.endswith('.rar'):
-        tmp_path += ".pdf" # Default fallback extension
-        
     try:
         async with aiohttp.ClientSession() as session:
-            # First check headers for file size
-            async with session.head(book_url, allow_redirects=True) as head_resp:
-                content_length = head_resp.headers.get("Content-Length")
-                if content_length and int(content_length) > 49 * 1024 * 1024:
-                    # File larger than 50MB
-                    raise ValueError("File is larger than Telegram limit (50MB).")
-            
-            # Now download
             async with session.get(book_url, allow_redirects=True) as resp:
-                if resp.status == 200:
-                    with open(tmp_path, "wb") as f:
-                        while True:
-                            chunk = await resp.content.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                else:
+                if resp.status != 200:
                     raise Exception(f"Failed to download, status: {resp.status}")
+                
+                # Check headers for file size before downloading
+                content_length = resp.headers.get("Content-Length")
+                if content_length and int(content_length) > 49 * 1024 * 1024:
+                    raise ValueError("File is larger than Telegram limit (50MB).")
+                
+                # Extract correct filename and extension
+                cd = resp.headers.get("Content-Disposition", "")
+                import urllib.parse
+                
+                filename = f"{book_name}.pdf" # Default fallback
+                if "filename=" in cd:
+                    match = re.search(r'filename="?([^"]+)"?', cd)
+                    if match:
+                        filename = urllib.parse.unquote(match.group(1))
+                else:
+                    final_url = str(resp.url)
+                    parsed_name = os.path.basename(urllib.parse.urlparse(final_url).path)
+                    if "." in parsed_name:
+                        filename = parsed_name
+                        
+                # Clean filename to be safe for OS
+                filename = re.sub(r'[\\/*?:"<>|]', "", filename)
+                tmp_path = f"/tmp/ziyouz_{book_number}_{filename}"
+                
+                # Stream the file to disk
+                with open(tmp_path, "wb") as f:
+                    while True:
+                        chunk = await resp.content.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
         
         # Send to user
         file_to_send = FSInputFile(tmp_path)
-        await bot.send_document(chat_id=callback.from_user.id, document=file_to_send, caption=caption_text)
+        
+        # Determine if it's an audio file based on extension
+        if tmp_path.lower().endswith(".mp3") or tmp_path.lower().endswith(".m4a"):
+            await bot.send_audio(chat_id=callback.from_user.id, audio=file_to_send, caption=caption_text)
+        else:
+            await bot.send_document(chat_id=callback.from_user.id, document=file_to_send, caption=caption_text)
+            
         await bot.delete_message(callback.message.chat.id, sent_msg.message_id)
         
         # Cleanup
@@ -233,9 +269,12 @@ async def book_download_handler(callback: types.CallbackQuery):
         builder = InlineKeyboardBuilder()
         builder.button(text="Saytga o`tish", url=book_url)
         
-        err_msg = f"⚙️ <b>Texnik sabablar tufayli \"{book_name}\" faylini Telegramga jo`natib bo`lmadi. (Masalan, fayl hajmi 50MB dan katta bo'lishi mumkin)</b>\n\n🔗 Quyidagi havola orqali Ziyouz saytining rasmiy sahifasida ushbu kitobdan foydalanishingiz mumkin.👇👇👇"
+        err_msg = f"⚙️ <b>Texnik sabablar tufayli faylni Telegramga jo`natib bo`lmadi. (Masalan, fayl hajmi 50MB dan katta bo'lishi mumkin)</b>\n\n🔗 Quyidagi havola orqali Ziyouz saytining rasmiy sahifasida ushbu materialdan foydalanishingiz mumkin.👇👇👇"
         await bot.send_message(chat_id=callback.from_user.id, text=err_msg, reply_markup=builder.as_markup())
         
-        # Cleanup
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        # Cleanup if the file was partially downloaded
+        try:
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
