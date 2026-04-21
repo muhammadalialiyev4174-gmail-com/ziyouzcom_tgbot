@@ -1,24 +1,20 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from loader import db
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
-categories = db.select_all_category()
-
-index = 0
-i = 0
-keyboard = []
-for category in categories:
-    if i % 2 == 0 and i != 0:
-        index += 1
-    if i % 2 == 0:
-        keyboard.append([KeyboardButton(text=category[1])])
-    else:
-        keyboard[index].append(KeyboardButton(text=category[1]))
-    i += 1
-keyboard.append([KeyboardButton(text="⬅️ Ortga")])
-menu = ReplyKeyboardMarkup(keyboard=keyboard,resize_keyboard=True)
+async def get_category_menu(db):
+    categories = await db.select_all_category()
+    builder = ReplyKeyboardBuilder()
+    
+    for category in categories:
+        builder.button(text=category[1])
+    
+    builder.adjust(2)
+    builder.row(KeyboardButton(text="⬅️ Ortga"))
+    
+    return builder.as_markup(resize_keyboard=True)
 
 start_menu = ReplyKeyboardMarkup(
-    keyboard = [
+    keyboard=[
         [
             KeyboardButton(text="📚 Ziyouz kutubxonasi"),
         ],
@@ -27,5 +23,5 @@ start_menu = ReplyKeyboardMarkup(
             KeyboardButton(text="KUTUBXONA RIVOJIGA HISSA")
         ],
     ],
-    resize_keyboard = True,
+    resize_keyboard=True,
 )

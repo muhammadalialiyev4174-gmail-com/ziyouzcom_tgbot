@@ -1,24 +1,29 @@
-from aiogram import executor
+import asyncio
+import logging
 
-from loader import dp, db
-import middlewares, filters, handlers
+from loader import dp, db, bot
 from utils.notify_admins import on_startup_notify
 from utils.set_bot_commands import set_default_commands
+import middlewares, handlers
 
-
-async def on_startup(dispatcher):
-    # Birlamchi komandalar (/star va /help)
-    await set_default_commands(dispatcher)
-
-    # Ma'lumotlar bazasini yaratamiz:
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    
+    # Initialize Database table
     try:
-        db.create_table_users()
+        await db.create_table_users()
     except Exception as err:
-        print(err)
+        logging.error(f"Error creating table: {err}")
 
-    # Bot ishga tushgani haqida adminga xabar berish
-    await on_startup_notify(dispatcher)
-
+    # Set up bot commands
+    await set_default_commands(bot)
+    
+    # Notify admins
+    await on_startup_notify(bot)
+    
+    # Start polling
+    logging.info("Starting bot...")
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    executor.start_polling(dp, on_startup=on_startup)
+    asyncio.run(main())

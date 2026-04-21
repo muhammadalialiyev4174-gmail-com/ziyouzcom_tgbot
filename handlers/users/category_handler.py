@@ -1,269 +1,241 @@
-import pprint
-import requests
+import logging
 import re
-from bs4 import BeautifulSoup
 import asyncio
+import os
+import aiohttp
+from bs4 import BeautifulSoup
+from cachetools import TTLCache
 
-from aiogram import types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from loader import dp,db,bot
-from keyboards.default.category import menu
+from aiogram import types, F
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
-# kutubxona bo`limlari uchun tugmalar yaratish
-head_url= "https://n.ziyouz.com"
-categories = db.select_all_category()
+from loader import dp, db, bot
+from keyboards.default.category import get_category_menu, start_menu
 
-@dp.message_handler(text="📚 Ziyouz kutubxonasi")
-async def kutubxona_handler(message: types.Message):
-    await message.answer(f"Bosh sahifa", reply_markup=menu)
+head_url = "https://n.ziyouz.com"
 
-@dp.message_handler(text=[category[1] for category in categories])
-async def category_handler(message: types.Message):
-    category_books = db.select_any_category_books(typ=message.text)
-    
-    index = 0
-    i = 0
-    keyboard = []
-    for subcategory in category_books:
-        if i % 2 == 0 and i != 0:
-            index += 1
-        if i % 2 == 0:
-            keyboard.append([KeyboardButton(text=subcategory[1])])
-        else:
-            keyboard[index].append(KeyboardButton(text=subcategory[1]))
-        i += 1
-    keyboard.append([KeyboardButton(text="◀️ Ortga")])
-    category_list = ReplyKeyboardMarkup(keyboard=keyboard,resize_keyboard=True)
-    
-    await message.reply(f"Bo`limlar",reply_markup=category_list)
-    
-# ortga tugmasi
-@dp.message_handler(text="◀️ Ortga")
-async def back_handler(message: types.Message):
-    await message.answer(text="📜 Bosh sahifa",reply_markup = menu)
+# Cache for 10 minutes to avoid hitting Ziyouz for every page turn
+# Key: url, Value: list of dictionaries {"text": str, "url": str, "number": str}
+subcategories_cache = TTLCache(maxsize=100, ttl=600)
 
-# inline kitoblar ro`yxatini yaratish
-category_books = db.select_all_category_books()
-@dp.message_handler(text=[category_book[1] for category_book in category_books])
-async def books_handler(message: types.Message):
-    category_book = db.select_category_books(name=message.text)
-    url = head_url+category_book[3]
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, "html.parser")
-    
+async def fetch_and_parse_books(url: str):
+    if url in subcategories_cache:
+        return subcategories_cache[url]
+        
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=15) as response:
+                if response.status != 200:
+                    logging.error(f"Failed to fetch {url}, status code {response.status}")
+                    return []
+                html = await response.text()
+        except Exception as e:
+            logging.error(f"Error fetching {url}: {e}")
+            return []
+
+    soup = BeautifulSoup(html, "html.parser")
     subcategories = soup.find_all("div", class_="pd-float")
     
-    i = 0
-    inline_keyboard = []
-    row = []
-    inline_number = 1
+    parsed_data = []
+    for subcategory in subcategories:
+        link = subcategory.find("a")
+        if not link:
+            continue
+        href = link["href"]
+        match = re.search(r"download=(\d+)", href)
+        if match:
+            number = match.group(1)
+            parsed_data.append({
+                "text": subcategory.text.strip(),
+                "url": head_url + href,
+                "number": number
+            })
+    
+    subcategories_cache[url] = parsed_data
+    return parsed_data
+
+def generate_books_keyboard(parsed_data, category_id, page=1, items_per_page=15):
+    builder = InlineKeyboardBuilder()
+    
+    start_idx = (page - 1) * items_per_page
+    end_idx = start_idx + items_per_page
+    current_page_items = parsed_data[start_idx:end_idx]
+    
     reply_text = ""
-    if len(subcategories)<=15:
-        for subcategory in subcategories:
-            reply_text += str(inline_number)+'. '+ subcategory.text + "\n"
-            link = subcategory.find("a")["href"] 
-            def get_number(url):
-                match = re.search(r"download=(\d+)", url)
-                if match:
-                    return match.group(1)
-                else:
-                    return None
-            number = get_number(link)
-            data = f"{category_book[0]} {number}"
-            row.append(InlineKeyboardButton(text=inline_number,callback_data=data))
-            print(inline_number)
-            if i % 4 == 0 and i != 0:
-                inline_keyboard.append(row)
-                row = []
-            i += 1
-            inline_number += 1
-        if row:
-            inline_keyboard.append(row)
-    else:
-        for subcategory in subcategories[:15]:
-            reply_text +=str(inline_number)+'. '+ subcategory.text + "\n"
-            link = subcategory.find("a")["href"] 
-            def get_number(url):
-                match = re.search(r"download=(\d+)", url)
-                if match:
-                    return match.group(1)
-                else:
-                    return None
-            number = get_number(link)
-            data = f"{category_book[0]} {number}"
-            row.append(InlineKeyboardButton(text=inline_number,callback_data=data))
-            print(inline_number)
-            if i % 4 == 0 and i != 0:
-                inline_keyboard.append(row)
-                pprint.pprint(str(inline_number))
-                row = []
-            i += 1
-            inline_number += 1
-        if row:
-            inline_keyboard.append(row)
-
-        inline_keyboard.append([InlineKeyboardButton(text="Davomi ➡️",callback_data=f"next {category_book[0]}")])
-    inline_buttons = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
-    empty_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="◀️ Ortga")]],resize_keyboard=True)
-    await message.reply(text=reply_text,reply_markup=inline_buttons)
-    await bot.send_message(chat_id=message.chat.id, text="Kitoblar ⬆️", reply_markup=empty_keyboard)
-
-# callback so`rovlar uchun handler
-@dp.callback_query_handler()
-async def callback_handler(callback: types.CallbackQuery):
-    if callback.data.startswith("next"):
-        book_id = callback.data.split(' ')[1]
-        category_book = db.select_category_books(id=book_id)
-        url = head_url+category_book[3]
-        response = requests.get(url)
-        soup = BeautifulSoup(response.content, "html.parser")
+    inline_number = start_idx + 1
     
-        subcategories = soup.find_all("div", class_="pd-float")
-    
-        i = 0
-        inline_keyboard = []
-        inline_number = 16
-        reply_text = ""
-        row = []
-        if len(subcategories)<30:
-            for subcategory in subcategories[15:]:
-                reply_text += str(inline_number)+'. '+ subcategory.text + "\n"
-                link = subcategory.find("a")["href"] 
-                def get_number(url):
-                    match = re.search(r"download=(\d+)", url)
-                    if match:
-                        return match.group(1)
-                    else:
-                        return None
-                number = get_number(link)
-                data = f"{category_book[0]} {number}"
-                row.append(InlineKeyboardButton(text=inline_number,callback_data=data))
-                if i % 4 == 0 and i != 0:
-                    inline_keyboard.append(row)
-                    row = []
-                i += 1
-                inline_number += 1
-            if row:
-                inline_keyboard.append(row)
-            inline_keyboard.append([InlineKeyboardButton(text="⬅️ Avvalgi",callback_data=f"before {category_book[0]}")])
-
-        else:
-            for subcategory in subcategories[15:30]:
-                reply_text += str(inline_number)+'. '+ subcategory.text + "\n"
-                link = subcategory.find("a")["href"] 
-                def get_number(url):
-                    match = re.search(r"download=(\d+)", url)
-                    if match:
-                        return match.group(1)
-                    else:
-                        return None
-                number = get_number(link)
-                data = f"{category_book[0]} {number}"
-                row.append(InlineKeyboardButton(text=inline_number,callback_data=data))
-                if i % 4 == 0 and i != 0:
-                    inline_keyboard.append(row)
-                    row = []
-                i += 1
-                inline_number += 1
-            if row:
-                inline_keyboard.append(row)
-            inline_keyboard.append([InlineKeyboardButton(text="⬅️ Avvalgi",callback_data=f"before {category_book[0]}")])
-        inline_buttons = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
-        await bot.edit_message_text(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            text=reply_text,
-        )
-        await bot.edit_message_reply_markup(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            reply_markup=inline_buttons,
-        )
+    for item in current_page_items:
+        reply_text += f"{inline_number}. {item['text']}\n"
+        data = f"book_{category_id}_{item['number']}"
+        builder.button(text=str(inline_number), callback_data=data)
+        inline_number += 1
         
-    elif callback.data.startswith("before"):
-        book_id = callback.data.split(' ')[1]
-        category_book = db.select_category_books(id=book_id)
-        url = head_url+category_book[3]
-        response = requests.get(url)
-        soup = BeautifulSoup(response.content, "html.parser")
+    builder.adjust(4)
     
-        subcategories = soup.find_all("div", class_="pd-float")
-    
-        i = 0
-        inline_keyboard = []
-        inline_number = 1
-        reply_text = ""
-        row = []
-        for subcategory in subcategories[:15]:
-            reply_text += str(inline_number)+'. '+ subcategory.text + "\n"
-            link = subcategory.find("a")["href"] 
-            def get_number(url):
-                match = re.search(r"download=(\d+)", url)
-                if match:
-                    return match.group(1)
-                else:
-                    return None
-            number = get_number(link)
-            data = f"{category_book[0]} {number}"
-            row.append(InlineKeyboardButton(text=inline_number,callback_data=data))
-            if i % 4 == 0 and i != 0:
-                inline_keyboard.append(row)
-                print(row,inline_number)
-                row = []
-            i += 1
-            inline_number += 1
-        if row:
-            inline_keyboard.append(row)
-        inline_keyboard.append([InlineKeyboardButton(text="Davomi ➡️",callback_data=f"next {category_book[0]}")])
-        inline_buttons = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
-    
-        await bot.edit_message_text(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            text=reply_text,
-        )
-        await bot.edit_message_reply_markup(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            reply_markup=inline_buttons,
-        )
+    # Pagination buttons
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Avvalgi", callback_data=f"page_{category_id}_{page-1}"))
+    if end_idx < len(parsed_data):
+        nav_buttons.append(InlineKeyboardButton(text="Davomi ➡️", callback_data=f"page_{category_id}_{page+1}"))
         
-    else:    
-        await callback.answer("So`rov jo`natildi.")
-        sent_msg = await callback.message.answer("Kitob yuborilmoqda...")
+    if nav_buttons:
+        builder.row(*nav_buttons)
+        
+    return reply_text, builder.as_markup()
 
-        # callback_data matni
-        data = callback.data
-        data = data.split(' ')
-        category_book = db.select_category_books(id=data[0])
-        url = head_url+category_book[3]
-        response = requests.get(url)
-        soup = BeautifulSoup(response.content, "html.parser")
-        subcategories = soup.find_all("div", class_="pd-float")
-        for subcategory in subcategories:
-            link = subcategory.find("a")["href"] 
-            book_id = f"download={data[1]}"
-            if re.search(book_id,link):
-                get_link = head_url+link
-                name = subcategory.text
-                text = f"{name}\n<b>Manba</b>: ziyouz.com"
-                break
-            else:
-                continue
-        print(get_link)
-        # Reply to callback query
-        try:
-            print("X")
-            await bot.send_document(chat_id=callback.from_user.id, document=get_link, caption=text)
-            await bot.delete_message(callback.message.chat.id, sent_msg.message_id)
-        except Exception as e:
-            await bot.delete_message(callback.message.chat.id, sent_msg.message_id)
-            print("XXX")
-            url = get_link
-            site_link = InlineKeyboardMarkup(inline_keyboard = [
-                [
-                    InlineKeyboardButton(text="Saytga o`tish", url = url),
-                ]
-            ])
-            text = f"⚙️ <b>Texnik sabablar tufayli \"{name}\" faylini Telegramga jo`natib bo`lmadi.</b>\n\n🔗 Quyidagi havola orqali Ziyouz saytining rasmiy sahifasida ushbu kitobdan foydalanishingiz mumkin.👇👇👇"
-            await bot.send_message(chat_id=callback.from_user.id, text=text, reply_markup=site_link)
+
+@dp.message(F.text == "📚 Ziyouz kutubxonasi")
+async def kutubxona_handler(message: types.Message):
+    menu = await get_category_menu(db)
+    await message.answer("Bosh sahifa", reply_markup=menu)
+
+
+@dp.message(lambda msg: msg.text and msg.text != "⬅️ Ortga" and msg.text != "📚 Ziyouz kutubxonasi" and msg.text != "🗒 Qo`llanma" and msg.text != "KUTUBXONA RIVOJIGA HISSA" and not msg.text.startswith("/"))
+async def dynamic_category_handler(message: types.Message):
+    # Determine if text is a category or a subcategory
+    # First, let's check if it's a category
+    categories = await db.select_all_category()
+    category_names = [cat[1] for cat in categories]
+    
+    if message.text in category_names:
+        category_books = await db.select_any_category_books(typ=message.text)
+        builder = ReplyKeyboardBuilder()
+        for subcategory in category_books:
+            builder.button(text=subcategory[1])
+        builder.adjust(2)
+        builder.row(KeyboardButton(text="◀️ Ortga"))
+        await message.reply("Bo`limlar", reply_markup=builder.as_markup(resize_keyboard=True))
+        return
+
+    # If it's a subcategory (book category)
+    category_book = await db.select_category_books(name=message.text)
+    if not category_book:
+        return
+        
+    url = head_url + category_book[3]
+    parsed_data = await fetch_and_parse_books(url)
+    
+    if not parsed_data:
+        await message.reply("Kechirasiz, ushbu bo'limdan ma'lumot topilmadi yoki sayt vaqtinchalik ishlamayapti.")
+        return
+        
+    reply_text, inline_markup = generate_books_keyboard(parsed_data, category_book[0], page=1)
+    
+    empty_keyboard = ReplyKeyboardBuilder()
+    empty_keyboard.button(text="◀️ Ortga")
+    
+    await message.reply(text=reply_text, reply_markup=inline_markup)
+    await bot.send_message(chat_id=message.chat.id, text="Kitoblar ⬆️", reply_markup=empty_keyboard.as_markup(resize_keyboard=True))
+
+
+@dp.message(F.text == "◀️ Ortga")
+async def back_handler(message: types.Message):
+    menu = await get_category_menu(db)
+    await message.answer(text="📜 Bosh sahifa", reply_markup=menu)
+
+
+@dp.callback_query(F.data.startswith("page_"))
+async def pagination_handler(callback: types.CallbackQuery):
+    _, category_id, page_str = callback.data.split("_")
+    page = int(page_str)
+    
+    category_book = await db.select_category_books(id=category_id)
+    if not category_book:
+        await callback.answer("Xatolik yuz berdi.", show_alert=True)
+        return
+        
+    url = head_url + category_book[3]
+    parsed_data = await fetch_and_parse_books(url)
+    
+    if not parsed_data:
+        await callback.answer("Ma'lumot topilmadi.", show_alert=True)
+        return
+        
+    reply_text, inline_markup = generate_books_keyboard(parsed_data, category_id, page=page)
+    
+    await callback.message.edit_text(text=reply_text, reply_markup=inline_markup)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("book_"))
+async def book_download_handler(callback: types.CallbackQuery):
+    _, category_id, book_number = callback.data.split("_")
+    
+    await callback.answer("So`rov jo`natildi. Kitob yuklanmoqda...")
+    sent_msg = await callback.message.answer("Kitob yuklab olinmoqda, kuting...")
+    
+    category_book = await db.select_category_books(id=category_id)
+    if not category_book:
+        await bot.delete_message(callback.message.chat.id, sent_msg.message_id)
+        return
+        
+    url = head_url + category_book[3]
+    parsed_data = await fetch_and_parse_books(url)
+    
+    target_book = None
+    for item in parsed_data:
+        if item["number"] == book_number:
+            target_book = item
+            break
+            
+    if not target_book:
+        await bot.delete_message(callback.message.chat.id, sent_msg.message_id)
+        await callback.message.answer("Kitob topilmadi.")
+        return
+        
+    book_url = target_book["url"]
+    book_name = target_book["text"]
+    
+    caption_text = f"<b>{book_name}</b>\n\n<b>Manba</b>: ziyouz.com"
+    
+    # Download the file to /tmp/ async
+    tmp_path = f"/tmp/{book_number}_{os.path.basename(book_url.split('?')[0])}"
+    if not tmp_path.endswith('.pdf') and not tmp_path.endswith('.zip') and not tmp_path.endswith('.rar'):
+        tmp_path += ".pdf" # Default fallback extension
+        
+    try:
+        async with aiohttp.ClientSession() as session:
+            # First check headers for file size
+            async with session.head(book_url, allow_redirects=True) as head_resp:
+                content_length = head_resp.headers.get("Content-Length")
+                if content_length and int(content_length) > 49 * 1024 * 1024:
+                    # File larger than 50MB
+                    raise ValueError("File is larger than Telegram limit (50MB).")
+            
+            # Now download
+            async with session.get(book_url, allow_redirects=True) as resp:
+                if resp.status == 200:
+                    with open(tmp_path, "wb") as f:
+                        while True:
+                            chunk = await resp.content.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                else:
+                    raise Exception(f"Failed to download, status: {resp.status}")
+        
+        # Send to user
+        file_to_send = FSInputFile(tmp_path)
+        await bot.send_document(chat_id=callback.from_user.id, document=file_to_send, caption=caption_text)
+        await bot.delete_message(callback.message.chat.id, sent_msg.message_id)
+        
+        # Cleanup
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            
+    except Exception as e:
+        logging.error(f"Download error: {e}")
+        await bot.delete_message(callback.message.chat.id, sent_msg.message_id)
+        
+        # Fallback to sending URL
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Saytga o`tish", url=book_url)
+        
+        err_msg = f"⚙️ <b>Texnik sabablar tufayli \"{book_name}\" faylini Telegramga jo`natib bo`lmadi. (Masalan, fayl hajmi 50MB dan katta bo'lishi mumkin)</b>\n\n🔗 Quyidagi havola orqali Ziyouz saytining rasmiy sahifasida ushbu kitobdan foydalanishingiz mumkin.👇👇👇"
+        await bot.send_message(chat_id=callback.from_user.id, text=err_msg, reply_markup=builder.as_markup())
+        
+        # Cleanup
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

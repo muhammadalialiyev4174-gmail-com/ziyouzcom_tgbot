@@ -1,25 +1,27 @@
 import asyncio
-
 from aiogram import types
+from aiogram import F
 
 from data.config import ADMINS
 from loader import dp, db, bot
 
-@dp.message_handler(text="/allusers", user_id=ADMINS)
+@dp.message(F.text == "/allusers", F.from_user.id.in_(list(map(int, ADMINS))))
 async def get_all_users(message: types.Message):
-    users = db.select_all_users()
-    print(users[0][0])
-    await message.answer(users)
+    users = await db.select_all_users()
+    await message.answer(str(users))
 
-@dp.message_handler(text="/reklama", user_id=ADMINS)
+@dp.message(F.text == "/reklama", F.from_user.id.in_(list(map(int, ADMINS))))
 async def send_ad_to_all(message: types.Message):
-    users = db.select_all_users()
+    users = await db.select_all_users()
     for user in users:
         user_id = user[0]
-        await bot.send_message(chat_id=user_id, text="@SariqDev kanaliga obuna bo'ling!")
+        try:
+            await bot.send_message(chat_id=user_id, text="@SariqDev kanaliga obuna bo'ling!")
+        except Exception:
+            pass
         await asyncio.sleep(0.05)
 
-@dp.message_handler(text="/cleandb", user_id=ADMINS)
-async def get_all_users(message: types.Message):
-    db.delete_users()
+@dp.message(F.text == "/cleandb", F.from_user.id.in_(list(map(int, ADMINS))))
+async def clean_all_users(message: types.Message):
+    await db.delete_users()
     await message.answer("Baza tozalandi!")

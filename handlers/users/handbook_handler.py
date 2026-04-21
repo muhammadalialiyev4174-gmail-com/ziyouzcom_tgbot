@@ -1,10 +1,11 @@
 from aiogram import types
-from loader import dp,db,bot
+from aiogram import F
+from loader import dp, bot
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from keyboards.default.category import start_menu
 
-@dp.message_handler(text="🗒 Qo`llanma")
-async def kutubxona_handler(message: types.Message):
+@dp.message(F.text == "🗒 Qo`llanma")
+async def handbook_handler(message: types.Message):
     text = """
     <b>Assalomu alaykum</b>, men ziyouz.com saytidagi kitoblarni telegramga jo`natib beruvchi botman. Botdan foydalanish uchun quyidagi qo`llanmani o`qing:
 
@@ -21,11 +22,12 @@ async def kutubxona_handler(message: types.Message):
 ‼️ Ziyo istagan qalblar uchun! Saytda taqdim etilgan elektron manbalardan faqatgina shaxsiy mutolaa maqsadida foydalanish mumkin. Tijoriy maqsadlarda foydalanish (sotish, chop etish, ko‘paytirish, tarqatish) qonunan taqiqlanadi. Saytdan materiallar olib chop etilganda manzilimiz koʻrsatilishi shart.
     """
     await message.answer(f"{text}", reply_markup=ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="⬅️ Ortga")]],resize_keyboard=True))
+        keyboard=[[KeyboardButton(text="⬅️ Ortga")]], resize_keyboard=True))
 
-@dp.message_handler(text="KUTUBXONA RIVOJIGA HISSA")
-async def send_photo(message: types.Message):
-    photo = types.InputFile('data/paypal-uzcard.png')
+@dp.message(F.text == "KUTUBXONA RIVOJIGA HISSA")
+async def send_photo_handler(message: types.Message):
+    from aiogram.types import FSInputFile
+    photo = FSInputFile('data/paypal-uzcard.png')
     text = """Saytimiz rivojiga hissa qo‘shmoqchi bo‘lsangiz:
 
 Uzcard plastik karta raqamimiz: <code>8600 5504 8563 9786</code>
@@ -37,7 +39,7 @@ Payoneer: davronbek@gmail.com"""
         caption=text
     )
 
-@dp.message_handler(text="⬅️ Ortga")
-async def kutubxona_handler(message: types.Message):
+@dp.message(F.text == "⬅️ Ortga")
+async def back_to_main_handler(message: types.Message):
     name = message.from_user.full_name
-    await message.reply(f"Assalomu alaykum, {name}! \n Xush kelibsiz!",reply_markup = start_menu)
+    await message.reply(f"Assalomu alaykum, {name}! \n Xush kelibsiz!", reply_markup=start_menu)
